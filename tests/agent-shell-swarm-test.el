@@ -14,7 +14,7 @@
 (cl-defun agent-shell-swarm-test--make-shell
     (name &key (agent "Claude") model mode ctx-used ctx-size cost currency
           age session-id client-process (dir "/tmp/") title no-shell-maker
-          tool-calls)
+          tool-calls supports-fork)
   "Create a fake `agent-shell-mode' buffer NAME populated for tests.
 
 NO-SHELL-MAKER omits the shell-maker config, simulating a shell
@@ -28,6 +28,7 @@ that hasn't finished initializing (its status reads as \"?\")."
                       (cons :buffer (current-buffer))
                       (cons :event-subscriptions nil)
                       (cons :tool-calls tool-calls)
+                      (cons :supports-session-fork supports-fork)
                       (cons :client (and client-process
                                          (list (cons :process client-process))))
                       (cons :last-activity-time
@@ -351,6 +352,25 @@ that hasn't finished initializing (its status reads as \"?\")."
                                    'agent-shell--state (get-buffer "Watched"))
                                   :event-subscriptions))))))
 
+(ert-deftest agent-shell-swarm-test-resubscribes-on-handler-version-bump ()
+  (agent-shell-swarm-test--with-swarm
+    (agent-shell-swarm-test--make-shell "Versioned" :session-id "s")
+    ;; Subscribe under an old handler version...
+    (let ((agent-shell-swarm--handler-version 1))
+      (agent-shell-swarm))
+    ;; ...then refresh under the current one: replaced, not duplicated.
+    (with-current-buffer agent-shell-swarm--buffer-name
+      (revert-buffer))
+    (should (= 1 (length (map-elt (buffer-local-value
+                                   'agent-shell--state (get-buffer "Versioned"))
+                                  :event-subscriptions))))
+    ;; The fresh subscription runs the current handler.
+    (with-current-buffer "Versioned"
+      (agent-shell--emit-event :event 'file-write
+                               :data '((:path . "/tmp/after-reload.py")))
+      (should (equal agent-shell-swarm--changed-files
+                     '("/tmp/after-reload.py"))))))
+
 ;;; Marks and bulk operations
 
 (ert-deftest agent-shell-swarm-test-marks-survive-revert ()
@@ -468,6 +488,64 @@ that hasn't finished initializing (its status reads as \"?\")."
       (should-error (agent-shell-swarm-detail-answer-permission)
                     :type 'user-error))))
 
+;;; Changed-files tracking
+
+(ert-deftest agent-shell-swarm-test-file-write-tracking ()
+  (agent-shell-swarm-test--with-swarm
+    (agent-shell-swarm-test--make-shell "Writer" :session-id "s" :dir "/tmp/repo/")
+    (agent-shell-swarm)
+    (with-current-buffer "Writer"
+      (agent-shell--emit-event :event 'file-write
+                               :data '((:path . "/tmp/repo/src/foo.py")))
+      (agent-shell--emit-event :event 'file-write
+                               :data '((:path . "/tmp/elsewhere/bar.py")))
+      ;; Duplicate write must not double up.
+      (agent-shell--emit-event :event 'file-write
+                               :data '((:path . "/tmp/repo/src/foo.py")))
+      (should (equal agent-shell-swarm--changed-files
+                     '("/tmp/elsewhere/bar.py" "/tmp/repo/src/foo.py"))))
+    (agent-shell-swarm-test--goto-row "Writer")
+    (with-current-buffer agent-shell-swarm--buffer-name
+      (agent-shell-swarm-inspect))
+    (with-current-buffer agent-shell-swarm--detail-buffer-name
+      (let ((content (buffer-substring-no-properties (point-min) (point-max))))
+        (should (string-match-p "Changed files (2):" content))
+        ;; Inside the shell's directory → relative; outside → absolute.
+        (should (string-match-p "^  src/foo\\.py$" content))
+        (should (string-match-p "^  /tmp/elsewhere/bar\\.py$" content))))))
+
+;;; Fork
+
+(ert-deftest agent-shell-swarm-test-fork ()
+  (agent-shell-swarm-test--with-swarm
+    (agent-shell-swarm-test--make-shell "Origin" :session-id "sid-1" :dir "/tmp/repo/"
+                                        :supports-fork t)
+    (agent-shell-swarm)
+    (agent-shell-swarm-test--goto-row "Origin")
+    (let (started started-dir)
+      (cl-letf (((symbol-function 'agent-shell--start)
+                 (cl-function
+                  (lambda (&key config fork-session-id new-session no-focus
+                           &allow-other-keys)
+                    (setq started (list config fork-session-id new-session no-focus)
+                          started-dir default-directory)))))
+        (with-current-buffer agent-shell-swarm--buffer-name
+          (agent-shell-swarm-fork)))
+      (should (equal (map-elt (car started) :mode-line-name) "Claude"))
+      (should (equal (cdr started) '("sid-1" t t)))
+      (should (equal started-dir "/tmp/repo/")))))
+
+(ert-deftest agent-shell-swarm-test-fork-requires-session-and-support ()
+  (agent-shell-swarm-test--with-swarm
+    (agent-shell-swarm-test--make-shell "No Session")
+    (agent-shell-swarm-test--make-shell "No Fork" :session-id "sid-2")
+    (agent-shell-swarm)
+    (with-current-buffer agent-shell-swarm--buffer-name
+      (agent-shell-swarm-test--goto-row "No Session")
+      (should-error (agent-shell-swarm-fork) :type 'user-error)
+      (agent-shell-swarm-test--goto-row "No Fork")
+      (should-error (agent-shell-swarm-fork) :type 'user-error))))
+
 ;;; Evil integration
 
 (ert-deftest agent-shell-swarm-test-evil-bindings ()
@@ -484,6 +562,7 @@ that hasn't finished initializing (its status reads as \"?\")."
                          ("n" . agent-shell-swarm-new-agent)
                          ("b" . agent-shell-swarm-next-blocked)
                          ("d" . agent-shell-swarm-inspect)
+                         ("f" . agent-shell-swarm-fork)
                          ("m" . agent-shell-swarm-mark)
                          ("u" . agent-shell-swarm-unmark)
                          ("U" . agent-shell-swarm-unmark-all)

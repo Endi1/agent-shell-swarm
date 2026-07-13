@@ -2,7 +2,7 @@
 
 ;; Author: Endi Sukaj
 ;; Version: 0.1.0
-;; Package-Requires: ((emacs "28.1") (agent-shell "0.1"))
+;; Package-Requires: ((emacs "29.1") (agent-shell "0.1"))
 ;; Keywords: convenience, tools
 ;; URL: https://github.com/esukaj/agent-shell-swarm
 
@@ -21,7 +21,8 @@
 ;;   k    kill the agent at point (also on x)
 ;;   n    start a new agent
 ;;   b    jump to the next blocked agent
-;;   d    inspect the agent: pending permission + tool calls
+;;   d    inspect the agent: pending permission, tool calls, changed files
+;;   f    fork the agent (new shell, same conversation)
 ;;   m/u  mark/unmark the agent at point (U unmarks all)
 ;;   K    kill all marked agents
 ;;   I    interrupt all marked agents
@@ -295,9 +296,19 @@ Blocked agents are the ones waiting on a permission response."
   "Seconds to wait before refreshing after a shell event.
 Coalesces event bursts (e.g. tool-call updates) into one refresh.")
 
+(defvar agent-shell-swarm--handler-version 2
+  "Bump when the subscription event handler changes behavior.
+Subscriptions live inside each shell's state and survive re-evaluating
+this file; recording the version lets `agent-shell-swarm--sync-subscriptions'
+replace stale handlers instead of keeping them forever.")
+
 (defvar-local agent-shell-swarm--subscriptions nil
-  "Alist of (SHELL-BUFFER . TOKEN) event subscriptions held by the dashboard.")
+  "Alist of (SHELL-BUFFER VERSION . TOKEN) subscriptions held by the dashboard.")
 (put 'agent-shell-swarm--subscriptions 'permanent-local t)
+
+(defun agent-shell-swarm--subscription-token (entry)
+  "Return the subscription token of ENTRY, tolerating the pre-version shape."
+  (if (consp (cdr entry)) (cddr entry) (cdr entry)))
 
 (defvar-local agent-shell-swarm--refresh-timer nil
   "Pending debounce timer for an event-driven refresh.")
@@ -317,6 +328,20 @@ Coalesces event bursts (e.g. tool-call updates) into one refresh.")
                      (setq agent-shell-swarm--refresh-timer nil)
                      (revert-buffer))))))))))
 
+(defvar-local agent-shell-swarm--changed-files nil
+  "Files this shell has written, newest first.
+Lives in the shell buffer; recorded from `file-write' events while a
+dashboard is subscribed, so writes made before the first dashboard
+render are not captured.")
+
+(defun agent-shell-swarm--on-shell-event (dashboard event)
+  "Handle EVENT from the shell in the current buffer; refresh DASHBOARD."
+  (when (eq (map-elt event :event) 'file-write)
+    (when-let* ((path (map-nested-elt event '(:data :path))))
+      (unless (member path agent-shell-swarm--changed-files)
+        (push path agent-shell-swarm--changed-files))))
+  (agent-shell-swarm--schedule-refresh dashboard))
+
 (defun agent-shell-swarm--sync-subscriptions ()
   "Subscribe the dashboard to events of any shell it isn't watching yet.
 Runs on every refresh, so shells created after the dashboard get
@@ -327,13 +352,26 @@ their buffer-local state."
           (seq-filter (lambda (entry) (buffer-live-p (car entry)))
                       agent-shell-swarm--subscriptions))
     (dolist (shell-buffer (agent-shell-buffers))
-      (unless (assq shell-buffer agent-shell-swarm--subscriptions)
-        (push (cons shell-buffer
-                    (agent-shell-subscribe-to
-                     :shell-buffer shell-buffer
-                     :on-event (lambda (_event)
-                                 (agent-shell-swarm--schedule-refresh dashboard))))
-              agent-shell-swarm--subscriptions)))))
+      (let ((entry (assq shell-buffer agent-shell-swarm--subscriptions)))
+        ;; Subscribed with an older handler (file re-evaluated since):
+        ;; drop it and resubscribe below.
+        (when (and entry (not (equal (car-safe (cdr entry))
+                                     agent-shell-swarm--handler-version)))
+          (with-current-buffer shell-buffer
+            (agent-shell-unsubscribe
+             :subscription (agent-shell-swarm--subscription-token entry)))
+          (setq agent-shell-swarm--subscriptions
+                (delq entry agent-shell-swarm--subscriptions))
+          (setq entry nil))
+        (unless entry
+          (push (cons shell-buffer
+                      (cons agent-shell-swarm--handler-version
+                            (agent-shell-subscribe-to
+                             :shell-buffer shell-buffer
+                             :on-event (lambda (event)
+                                         (agent-shell-swarm--on-shell-event
+                                          dashboard event)))))
+                agent-shell-swarm--subscriptions))))))
 
 (defun agent-shell-swarm--teardown ()
   "Cancel the refresh timer and drop all shell subscriptions."
@@ -343,7 +381,8 @@ their buffer-local state."
   (dolist (entry agent-shell-swarm--subscriptions)
     (when (buffer-live-p (car entry))
       (with-current-buffer (car entry)
-        (agent-shell-unsubscribe :subscription (cdr entry)))))
+        (agent-shell-unsubscribe
+         :subscription (agent-shell-swarm--subscription-token entry)))))
   (setq agent-shell-swarm--subscriptions nil))
 
 (defun agent-shell-swarm--on-new-shell ()
@@ -500,12 +539,35 @@ dashboard to the new shell's events."
                       (mapconcat (lambda (action) (map-elt action :option))
                                  (map-elt tool-call :permission-actions)
                                  " · "))))
+    (let ((files (buffer-local-value 'agent-shell-swarm--changed-files
+                                     shell-buffer)))
+      (insert "\n"
+              (propertize (format "Changed files (%d):" (length files))
+                          'face 'bold)
+              "\n")
+      (if (null files)
+          (insert (propertize
+                   "  none recorded (tracks ACP file writes since the dashboard first opened)\n"
+                   'face 'shadow))
+        (dolist (path (reverse files))
+          (insert "  "
+                  (buttonize (agent-shell-swarm--display-path path shell-buffer)
+                             #'find-file path)
+                  "\n"))))
     (when-let* ((tool-calls (map-elt state :tool-calls)))
       (insert "\n" (propertize "Tool calls:" 'face 'bold) "\n")
       (dolist (entry tool-calls)
         (insert (agent-shell-swarm--format-tool-call (cdr entry)) "\n")))
     (goto-char (point-min))
     (forward-line (1- line))))
+
+(defun agent-shell-swarm--display-path (path shell-buffer)
+  "Return PATH relative to SHELL-BUFFER's directory when it lies inside it."
+  (let ((relative (file-relative-name
+                   path (buffer-local-value 'default-directory shell-buffer))))
+    (if (string-prefix-p ".." relative)
+        (abbreviate-file-name path)
+      relative)))
 
 (defun agent-shell-swarm-detail-refresh ()
   "Re-render the detail view."
@@ -576,6 +638,29 @@ Includes any pending permission request (answerable with
 
 ;;; Summary
 
+(defun agent-shell-swarm-fork ()
+  "Fork the agent at point: a new shell continuing the same conversation.
+Only available when the agent advertises session-fork support."
+  (interactive)
+  (let* ((shell-buffer (agent-shell-swarm--shell-buffer-at-point))
+         (state (buffer-local-value 'agent-shell--state shell-buffer))
+         (session-id (map-nested-elt state '(:session :id)))
+         (config (map-elt state :agent-config)))
+    (unless session-id
+      (user-error "%s has no active session to fork" (buffer-name shell-buffer)))
+    (unless (map-elt state :supports-session-fork)
+      (user-error "%s does not support session forking" (buffer-name shell-buffer)))
+    ;; Same arguments agent-shell's own fork command uses, but stay in
+    ;; the dashboard; the fork appears as a new row.
+    (let ((default-directory (buffer-local-value 'default-directory shell-buffer)))
+      (agent-shell--start :config config
+                          :session-strategy 'new
+                          :fork-session-id session-id
+                          :new-session t
+                          :no-focus t))
+    (revert-buffer)
+    (message "Forked %s" (buffer-name shell-buffer))))
+
 (defun agent-shell-swarm--summary ()
   "Return a one-line summary of the swarm for the mode line."
   (let* ((buffers (agent-shell-buffers))
@@ -619,6 +704,7 @@ Includes any pending permission request (answerable with
   "n" #'agent-shell-swarm-new-agent
   "b" #'agent-shell-swarm-next-blocked
   "d" #'agent-shell-swarm-inspect
+  "f" #'agent-shell-swarm-fork
   "m" #'agent-shell-swarm-mark
   "u" #'agent-shell-swarm-unmark
   "U" #'agent-shell-swarm-unmark-all
@@ -639,6 +725,7 @@ Includes any pending permission request (answerable with
     "n" #'agent-shell-swarm-new-agent
     "b" #'agent-shell-swarm-next-blocked
     "d" #'agent-shell-swarm-inspect
+    "f" #'agent-shell-swarm-fork
     "m" #'agent-shell-swarm-mark
     "u" #'agent-shell-swarm-unmark
     "U" #'agent-shell-swarm-unmark-all
