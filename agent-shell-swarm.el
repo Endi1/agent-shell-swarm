@@ -296,11 +296,13 @@ Blocked agents are the ones waiting on a permission response."
   "Seconds to wait before refreshing after a shell event.
 Coalesces event bursts (e.g. tool-call updates) into one refresh.")
 
-(defvar agent-shell-swarm--handler-version 2
+(defconst agent-shell-swarm--handler-version 3
   "Bump when the subscription event handler changes behavior.
 Subscriptions live inside each shell's state and survive re-evaluating
 this file; recording the version lets `agent-shell-swarm--sync-subscriptions'
-replace stale handlers instead of keeping them forever.")
+replace stale handlers instead of keeping them forever.  A `defconst'
+so reloading the file actually updates it — `defvar' would keep the
+old value and defeat the whole mechanism.")
 
 (defvar-local agent-shell-swarm--subscriptions nil
   "Alist of (SHELL-BUFFER VERSION . TOKEN) subscriptions held by the dashboard.")
@@ -330,16 +332,35 @@ replace stale handlers instead of keeping them forever.")
 
 (defvar-local agent-shell-swarm--changed-files nil
   "Files this shell has written, newest first.
-Lives in the shell buffer; recorded from `file-write' events while a
-dashboard is subscribed, so writes made before the first dashboard
-render are not captured.")
+Lives in the shell buffer; recorded while a dashboard is subscribed,
+so writes made before the first dashboard render are not captured.
+
+Two sources feed it: `file-write' events (agents using ACP's client
+filesystem API) and completed file-touching tool calls (agents like
+Claude Code that write directly and only report the tool call).")
+
+(defconst agent-shell-swarm--file-tool-kinds '("edit" "delete" "move")
+  "ACP tool-call kinds that modify files (per the ToolKind schema).")
+
+(defun agent-shell-swarm--record-changed-file (path)
+  "Record PATH in the current shell's changed-files list."
+  (unless (member path agent-shell-swarm--changed-files)
+    (push path agent-shell-swarm--changed-files)))
 
 (defun agent-shell-swarm--on-shell-event (dashboard event)
   "Handle EVENT from the shell in the current buffer; refresh DASHBOARD."
-  (when (eq (map-elt event :event) 'file-write)
-    (when-let* ((path (map-nested-elt event '(:data :path))))
-      (unless (member path agent-shell-swarm--changed-files)
-        (push path agent-shell-swarm--changed-files))))
+  (pcase (map-elt event :event)
+    ('file-write
+     (when-let* ((path (map-nested-elt event '(:data :path))))
+       (agent-shell-swarm--record-changed-file path)))
+    ('tool-call-update
+     (let ((tool-call (map-nested-elt event '(:data :tool-call))))
+       (when (and (member (map-elt tool-call :kind)
+                          agent-shell-swarm--file-tool-kinds)
+                  (equal (map-elt tool-call :status) "completed"))
+         (seq-doseq (location (map-elt tool-call :locations))
+           (when-let* ((path (map-elt location 'path)))
+             (agent-shell-swarm--record-changed-file path)))))))
   (agent-shell-swarm--schedule-refresh dashboard))
 
 (defun agent-shell-swarm--sync-subscriptions ()
@@ -547,7 +568,7 @@ dashboard to the new shell's events."
               "\n")
       (if (null files)
           (insert (propertize
-                   "  none recorded (tracks ACP file writes since the dashboard first opened)\n"
+                   "  none recorded (tracked since the dashboard first opened)\n"
                    'face 'shadow))
         (dolist (path (reverse files))
           (insert "  "

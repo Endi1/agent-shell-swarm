@@ -514,6 +514,34 @@ that hasn't finished initializing (its status reads as \"?\")."
         (should (string-match-p "^  src/foo\\.py$" content))
         (should (string-match-p "^  /tmp/elsewhere/bar\\.py$" content))))))
 
+(ert-deftest agent-shell-swarm-test-tool-call-file-tracking ()
+  (agent-shell-swarm-test--with-swarm
+    (agent-shell-swarm-test--make-shell "Editor" :session-id "s" :dir "/tmp/repo/")
+    (agent-shell-swarm)
+    (with-current-buffer "Editor"
+      ;; Shapes as observed live from Claude Code: locations is a
+      ;; vector of alists with symbol keys.
+      (agent-shell--emit-event
+       :event 'tool-call-update
+       :data `((:tool-call-id . "tc-1")
+               (:tool-call . ((:kind . "edit")
+                              (:status . "completed")
+                              (:locations . [((path . "/tmp/repo/foo.py"))])))))
+      ;; Pending edits and completed non-file tools must not record.
+      (agent-shell--emit-event
+       :event 'tool-call-update
+       :data `((:tool-call-id . "tc-2")
+               (:tool-call . ((:kind . "edit")
+                              (:status . "pending")
+                              (:locations . [((path . "/tmp/repo/pending.py"))])))))
+      (agent-shell--emit-event
+       :event 'tool-call-update
+       :data `((:tool-call-id . "tc-3")
+               (:tool-call . ((:kind . "execute")
+                              (:status . "completed")
+                              (:locations . [((path . "/tmp/repo/ran.sh"))])))))
+      (should (equal agent-shell-swarm--changed-files '("/tmp/repo/foo.py"))))))
+
 ;;; Fork
 
 (ert-deftest agent-shell-swarm-test-fork ()
