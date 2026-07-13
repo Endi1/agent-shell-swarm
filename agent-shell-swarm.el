@@ -4,7 +4,7 @@
 ;; Version: 0.1.0
 ;; Package-Requires: ((emacs "29.1") (agent-shell "0.1"))
 ;; Keywords: convenience, tools
-;; URL: https://github.com/esukaj/agent-shell-swarm
+;; URL: https://github.com/Endi1/agent-shell-swarm
 
 ;;; Commentary:
 
@@ -40,6 +40,13 @@
 ;;
 ;; The mode line shows a swarm summary: agent count, busy/blocked
 ;; counts, and total cost.
+;;
+;; The package is split into:
+;;   agent-shell-swarm-shell.el    per-shell state readers
+;;   agent-shell-swarm-events.el   event subscriptions and refresh
+;;   agent-shell-swarm-actions.el  row commands and bulk operations
+;;   agent-shell-swarm-detail.el   the detail view
+;;   agent-shell-swarm.el          the dashboard itself (this file)
 
 ;;; Code:
 
@@ -47,9 +54,15 @@
 (require 'seq)
 (require 'tabulated-list)
 (require 'agent-shell)
+(require 'agent-shell-swarm-shell)
+(require 'agent-shell-swarm-events)
+(require 'agent-shell-swarm-actions)
+(require 'agent-shell-swarm-detail)
 
 (defconst agent-shell-swarm--buffer-name "*agent-shell swarm*"
   "Name of the swarm dashboard buffer.")
+
+;;; Rendering
 
 (defconst agent-shell-swarm--list-format
   [("Buffer" 30 t)
@@ -92,63 +105,6 @@ cells wide and knock every following column off by one."
                   (truncate-string-to-width cell width nil nil "...")))))))
   row)
 
-(defun agent-shell-swarm--status (shell-buffer)
-  "Return a status string for SHELL-BUFFER.
-
-One of \"ready\", \"busy\", \"blocked\", \"dead\" (agent process
-exited), or \"?\" when the status cannot be determined."
-  (let* ((state (buffer-local-value 'agent-shell--state shell-buffer))
-         (process (map-nested-elt state '(:client :process))))
-    (cond ((and process (not (process-live-p process))) "dead")
-          ;; `agent-shell-status' errors on shells that haven't finished
-          ;; initializing; don't let one shell break the whole dashboard.
-          ((condition-case nil
-               (symbol-name (agent-shell-status :shell-buffer shell-buffer))
-             (error nil)))
-          (t "?"))))
-
-(defun agent-shell-swarm--status-face (status)
-  "Return the face used to display STATUS."
-  (pcase status
-    ("busy" 'warning)
-    ("blocked" 'error)
-    ("dead" 'shadow)
-    ("?" 'shadow)
-    (_ 'success)))
-
-(defun agent-shell-swarm--context-percent (state)
-  "Return STATE's context window usage as a percent string.
-Returns \"\" when the agent hasn't reported a context size.  High
-usage is highlighted (warning at 75%, error at 90%)."
-  (let ((used (map-nested-elt state '(:usage :context-used)))
-        (size (map-nested-elt state '(:usage :context-size))))
-    (if (or (null size) (zerop size))
-        ""
-      (let ((percent (floor (* 100.0 (/ (float (or used 0)) size)))))
-        (propertize (format "%d%%" percent)
-                    'face (cond ((>= percent 90) 'error)
-                                ((>= percent 75) 'warning)
-                                (t 'default)))))))
-
-(defun agent-shell-swarm--cost (state)
-  "Return STATE's accumulated cost as a string, or \"\" if unreported."
-  (let ((amount (map-nested-elt state '(:usage :cost-amount))))
-    (if (and amount (> amount 0))
-        (format "%s%.2f"
-                (or (map-nested-elt state '(:usage :cost-currency)) "$")
-                amount)
-      "")))
-
-(defun agent-shell-swarm--age (time)
-  "Return TIME as a compact age relative to now, or \"\" when nil."
-  (if (null time)
-      ""
-    (let ((seconds (float-time (time-subtract (current-time) time))))
-      (cond ((< seconds 60) (format "%ds" (max 0 (floor seconds))))
-            ((< seconds 3600) (format "%dm" (floor seconds 60)))
-            ((< seconds 86400) (format "%dh" (floor seconds 3600)))
-            (t (format "%dd" (floor seconds 86400)))))))
-
 (defun agent-shell-swarm--entry (shell-buffer)
   "Build a `tabulated-list-entries' entry for SHELL-BUFFER."
   (let* ((state (buffer-local-value 'agent-shell--state shell-buffer))
@@ -180,507 +136,7 @@ usage is highlighted (warning at 75%, error at 90%)."
   "Return dashboard entries for all live agent-shell buffers."
   (mapcar #'agent-shell-swarm--entry (agent-shell-buffers)))
 
-(defun agent-shell-swarm--shell-buffer-at-point ()
-  "Return the live shell buffer for the dashboard row at point.
-Signals a `user-error' when there is no row or its buffer is dead."
-  (let ((shell-buffer (tabulated-list-get-id)))
-    (unless shell-buffer
-      (user-error "No agent at point"))
-    (unless (buffer-live-p shell-buffer)
-      (user-error "Shell buffer no longer exists"))
-    shell-buffer))
-
-(defun agent-shell-swarm--session-ready-p (shell-buffer)
-  "Return non-nil when SHELL-BUFFER can accept prompt input.
-Mirrors the session check `agent-shell--insert-to-shell-buffer'
-performs, so we can fail with a friendlier error."
-  (with-current-buffer shell-buffer
-    (or (map-nested-elt agent-shell--state '(:session :id))
-        (eq agent-shell-session-strategy 'new-deferred))))
-
-(defun agent-shell-swarm-visit ()
-  "Visit the agent-shell buffer at point."
-  (interactive)
-  (pop-to-buffer (agent-shell-swarm--shell-buffer-at-point)))
-
-(defun agent-shell-swarm-send-prompt ()
-  "Send a prompt to the agent at point without leaving the dashboard.
-Asks for confirmation when the agent is busy or blocked, since the
-input would queue behind (or interleave with) in-flight work."
-  (interactive)
-  (let* ((shell-buffer (agent-shell-swarm--shell-buffer-at-point))
-         (name (buffer-name shell-buffer))
-         (status (agent-shell-swarm--status shell-buffer)))
-    (unless (agent-shell-swarm--session-ready-p shell-buffer)
-      (user-error "%s is still initializing; try again shortly" name))
-    (when (and (member status '("busy" "blocked"))
-               (not (yes-or-no-p (format "%s is %s; send anyway? " name status))))
-      (user-error "Cancelled"))
-    (let ((prompt (string-trim (read-string (format "Send to %s: " name)))))
-      (when (string-empty-p prompt)
-        (user-error "Nothing to send"))
-      (agent-shell--insert-to-shell-buffer :shell-buffer shell-buffer
-                                           :text prompt
-                                           :submit t
-                                           :no-focus t)
-      (revert-buffer)
-      (message "Sent to %s" name))))
-
-(defun agent-shell-swarm-interrupt ()
-  "Interrupt the agent at point if it is busy or blocked."
-  (interactive)
-  (let* ((shell-buffer (agent-shell-swarm--shell-buffer-at-point))
-         (status (agent-shell-swarm--status shell-buffer)))
-    (if (not (member status '("busy" "blocked")))
-        (message "%s has nothing to interrupt (status: %s)"
-                 (buffer-name shell-buffer) status)
-      (with-current-buffer shell-buffer
-        (agent-shell-interrupt))
-      (revert-buffer))))
-
-(defun agent-shell-swarm-kill ()
-  "Kill the agent-shell buffer at point, after confirmation."
-  (interactive)
-  (let ((shell-buffer (agent-shell-swarm--shell-buffer-at-point)))
-    (when (yes-or-no-p (format "Kill agent %s? " (buffer-name shell-buffer)))
-      (kill-buffer shell-buffer)
-      (revert-buffer))))
-
-(defun agent-shell-swarm-new-agent ()
-  "Start a new agent from the dashboard.
-Prompts for a working directory, defaulting to the directory of the
-agent at point, then for an agent config.  The shell's own working
-directory logic still applies (`agent-shell-cwd' may prefer the
-project root containing the chosen directory)."
-  (interactive)
-  (let* ((at-point (tabulated-list-get-id))
-         (initial (if (and at-point (buffer-live-p at-point))
-                      (buffer-local-value 'default-directory at-point)
-                    default-directory))
-         (directory (read-directory-name "Start agent in: " initial nil t))
-         (config (or (agent-shell-select-config :prompt "Start new agent: ")
-                     (user-error "No agent selected")))
-         (default-directory directory))
-    (agent-shell--start :config config :no-focus t :new-session t)
-    (revert-buffer)))
-
-(defun agent-shell-swarm--blocked-row-positions ()
-  "Return dashboard positions of rows whose agent is blocked."
-  (let (positions)
-    (save-excursion
-      (goto-char (point-min))
-      (while (not (eobp))
-        (when-let* ((buffer (tabulated-list-get-id))
-                    ((buffer-live-p buffer))
-                    ((equal (agent-shell-swarm--status buffer) "blocked")))
-          (push (point) positions))
-        (forward-line 1)))
-    (nreverse positions)))
-
-(defun agent-shell-swarm-next-blocked ()
-  "Move point to the next blocked agent, wrapping around the list.
-Blocked agents are the ones waiting on a permission response."
-  (interactive)
-  (let* ((positions (agent-shell-swarm--blocked-row-positions))
-         (next (or (seq-find (lambda (position)
-                               (> position (line-beginning-position)))
-                             positions)
-                   (car positions))))
-    (if next
-        (goto-char next)
-      (message "No blocked agents"))))
-
-;;; Event-driven refresh
-
-(defvar agent-shell-swarm-refresh-debounce 0.3
-  "Seconds to wait before refreshing after a shell event.
-Coalesces event bursts (e.g. tool-call updates) into one refresh.")
-
-(defconst agent-shell-swarm--handler-version 3
-  "Bump when the subscription event handler changes behavior.
-Subscriptions live inside each shell's state and survive re-evaluating
-this file; recording the version lets `agent-shell-swarm--sync-subscriptions'
-replace stale handlers instead of keeping them forever.  A `defconst'
-so reloading the file actually updates it — `defvar' would keep the
-old value and defeat the whole mechanism.")
-
-(defvar-local agent-shell-swarm--subscriptions nil
-  "Alist of (SHELL-BUFFER VERSION . TOKEN) subscriptions held by the dashboard.")
-(put 'agent-shell-swarm--subscriptions 'permanent-local t)
-
-(defun agent-shell-swarm--subscription-token (entry)
-  "Return the subscription token of ENTRY, tolerating the pre-version shape."
-  (if (consp (cdr entry)) (cddr entry) (cdr entry)))
-
-(defvar-local agent-shell-swarm--refresh-timer nil
-  "Pending debounce timer for an event-driven refresh.")
-(put 'agent-shell-swarm--refresh-timer 'permanent-local t)
-
-(defun agent-shell-swarm--schedule-refresh (dashboard)
-  "Revert DASHBOARD soon, coalescing bursts of shell events."
-  (when (buffer-live-p dashboard)
-    (with-current-buffer dashboard
-      (unless agent-shell-swarm--refresh-timer
-        (setq agent-shell-swarm--refresh-timer
-              (run-with-timer
-               agent-shell-swarm-refresh-debounce nil
-               (lambda ()
-                 (when (buffer-live-p dashboard)
-                   (with-current-buffer dashboard
-                     (setq agent-shell-swarm--refresh-timer nil)
-                     (revert-buffer))))))))))
-
-(defvar-local agent-shell-swarm--changed-files nil
-  "Files this shell has written, newest first.
-Lives in the shell buffer; recorded while a dashboard is subscribed,
-so writes made before the first dashboard render are not captured.
-
-Two sources feed it: `file-write' events (agents using ACP's client
-filesystem API) and completed file-touching tool calls (agents like
-Claude Code that write directly and only report the tool call).")
-
-(defconst agent-shell-swarm--file-tool-kinds '("edit" "delete" "move")
-  "ACP tool-call kinds that modify files (per the ToolKind schema).")
-
-(defun agent-shell-swarm--record-changed-file (path)
-  "Record PATH in the current shell's changed-files list."
-  (unless (member path agent-shell-swarm--changed-files)
-    (push path agent-shell-swarm--changed-files)))
-
-(defun agent-shell-swarm--on-shell-event (dashboard event)
-  "Handle EVENT from the shell in the current buffer; refresh DASHBOARD."
-  (pcase (map-elt event :event)
-    ('file-write
-     (when-let* ((path (map-nested-elt event '(:data :path))))
-       (agent-shell-swarm--record-changed-file path)))
-    ('tool-call-update
-     (let ((tool-call (map-nested-elt event '(:data :tool-call))))
-       (when (and (member (map-elt tool-call :kind)
-                          agent-shell-swarm--file-tool-kinds)
-                  (equal (map-elt tool-call :status) "completed"))
-         (seq-doseq (location (map-elt tool-call :locations))
-           (when-let* ((path (map-elt location 'path)))
-             (agent-shell-swarm--record-changed-file path)))))))
-  (agent-shell-swarm--schedule-refresh dashboard))
-
-(defun agent-shell-swarm--sync-subscriptions ()
-  "Subscribe the dashboard to events of any shell it isn't watching yet.
-Runs on every refresh, so shells created after the dashboard get
-picked up.  Dead shells are pruned; their subscriptions died with
-their buffer-local state."
-  (let ((dashboard (current-buffer)))
-    (setq agent-shell-swarm--subscriptions
-          (seq-filter (lambda (entry) (buffer-live-p (car entry)))
-                      agent-shell-swarm--subscriptions))
-    (dolist (shell-buffer (agent-shell-buffers))
-      (let ((entry (assq shell-buffer agent-shell-swarm--subscriptions)))
-        ;; Subscribed with an older handler (file re-evaluated since):
-        ;; drop it and resubscribe below.
-        (when (and entry (not (equal (car-safe (cdr entry))
-                                     agent-shell-swarm--handler-version)))
-          (with-current-buffer shell-buffer
-            (agent-shell-unsubscribe
-             :subscription (agent-shell-swarm--subscription-token entry)))
-          (setq agent-shell-swarm--subscriptions
-                (delq entry agent-shell-swarm--subscriptions))
-          (setq entry nil))
-        (unless entry
-          (push (cons shell-buffer
-                      (cons agent-shell-swarm--handler-version
-                            (agent-shell-subscribe-to
-                             :shell-buffer shell-buffer
-                             :on-event (lambda (event)
-                                         (agent-shell-swarm--on-shell-event
-                                          dashboard event)))))
-                agent-shell-swarm--subscriptions))))))
-
-(defun agent-shell-swarm--teardown ()
-  "Cancel the refresh timer and drop all shell subscriptions."
-  (when (timerp agent-shell-swarm--refresh-timer)
-    (cancel-timer agent-shell-swarm--refresh-timer)
-    (setq agent-shell-swarm--refresh-timer nil))
-  (dolist (entry agent-shell-swarm--subscriptions)
-    (when (buffer-live-p (car entry))
-      (with-current-buffer (car entry)
-        (agent-shell-unsubscribe
-         :subscription (agent-shell-swarm--subscription-token entry)))))
-  (setq agent-shell-swarm--subscriptions nil))
-
-(defun agent-shell-swarm--on-new-shell ()
-  "Refresh the dashboard when a new agent shell starts.
-On `agent-shell-mode-hook' globally; the refresh subscribes the
-dashboard to the new shell's events."
-  (when-let* ((dashboard (get-buffer agent-shell-swarm--buffer-name)))
-    (agent-shell-swarm--schedule-refresh dashboard)))
-
-;;; Marks and bulk operations
-
-(defun agent-shell-swarm--marked-shells ()
-  "Return the shell buffers of all marked dashboard rows."
-  (let (marked)
-    (save-excursion
-      (goto-char (point-min))
-      (while (not (eobp))
-        (when (and (eq (char-after) ?*) (tabulated-list-get-id))
-          (push (tabulated-list-get-id) marked))
-        (forward-line 1)))
-    (nreverse marked)))
-
-(defun agent-shell-swarm--apply-marks (shells)
-  "Re-mark dashboard rows whose shell buffer is in SHELLS."
-  (save-excursion
-    (goto-char (point-min))
-    (while (not (eobp))
-      (when (memq (tabulated-list-get-id) shells)
-        (tabulated-list-put-tag "*"))
-      (forward-line 1))))
-
-(defun agent-shell-swarm--revert (&rest _)
-  "Revert the dashboard, preserving row marks across the refresh."
-  (let ((marked (agent-shell-swarm--marked-shells)))
-    (tabulated-list-revert)
-    (agent-shell-swarm--apply-marks marked)))
-
-(defun agent-shell-swarm-mark ()
-  "Mark the agent at point and move down."
-  (interactive)
-  (agent-shell-swarm--shell-buffer-at-point)
-  (tabulated-list-put-tag "*" t))
-
-(defun agent-shell-swarm-unmark ()
-  "Unmark the agent at point and move down."
-  (interactive)
-  (tabulated-list-put-tag " " t))
-
-(defun agent-shell-swarm-unmark-all ()
-  "Unmark all agents."
-  (interactive)
-  (save-excursion
-    (goto-char (point-min))
-    (while (not (eobp))
-      (tabulated-list-put-tag " ")
-      (forward-line 1))))
-
-(defun agent-shell-swarm-kill-marked ()
-  "Kill all marked agents, after a single confirmation."
-  (interactive)
-  (let ((marked (seq-filter #'buffer-live-p (agent-shell-swarm--marked-shells))))
-    (unless marked
-      (user-error "No marked agents"))
-    (when (yes-or-no-p (format "Kill %d marked agent%s? "
-                               (length marked)
-                               (if (= 1 (length marked)) "" "s")))
-      (dolist (shell-buffer marked)
-        (kill-buffer shell-buffer))
-      (revert-buffer))))
-
-(defun agent-shell-swarm-interrupt-marked ()
-  "Interrupt every marked agent that is busy or blocked."
-  (interactive)
-  (let* ((marked (seq-filter #'buffer-live-p (agent-shell-swarm--marked-shells)))
-         (interruptible (seq-filter
-                         (lambda (buffer)
-                           (member (agent-shell-swarm--status buffer)
-                                   '("busy" "blocked")))
-                         marked)))
-    (unless marked
-      (user-error "No marked agents"))
-    (if (not interruptible)
-        (message "No marked agent is busy or blocked")
-      (when (yes-or-no-p (format "Interrupt %d agent%s? "
-                                 (length interruptible)
-                                 (if (= 1 (length interruptible)) "" "s")))
-        (dolist (shell-buffer interruptible)
-          (with-current-buffer shell-buffer
-            ;; Force: we already confirmed once for the whole set.
-            (agent-shell-interrupt t)))
-        (revert-buffer)))))
-
-;;; Detail view
-
-(defconst agent-shell-swarm--detail-buffer-name "*agent-shell swarm detail*"
-  "Name of the agent detail buffer.")
-
-(defvar-local agent-shell-swarm-detail--shell-buffer nil
-  "Shell buffer this detail view describes.")
-
-(defun agent-shell-swarm--pending-permission (shell-buffer)
-  "Return the (TOOL-CALL-ID . TOOL-CALL) awaiting permission in SHELL-BUFFER."
-  (seq-find (lambda (entry)
-              (map-elt (cdr entry) :permission-request-id))
-            (map-elt (buffer-local-value 'agent-shell--state shell-buffer)
-                     :tool-calls)))
-
-(defun agent-shell-swarm--format-tool-call (tool-call)
-  "Format TOOL-CALL as a one-line summary."
-  (format "  [%s] %s — %s"
-          (or (map-elt tool-call :kind) "?")
-          (replace-regexp-in-string "[\n\r\t]+" " "
-                                    (string-trim (or (map-elt tool-call :title) "")))
-          (or (map-elt tool-call :status) "?")))
-
-(defun agent-shell-swarm-detail-render ()
-  "Render the detail view from its shell's live state."
-  (let* ((shell-buffer agent-shell-swarm-detail--shell-buffer)
-         (state (buffer-local-value 'agent-shell--state shell-buffer))
-         (status (agent-shell-swarm--status shell-buffer))
-         (line (line-number-at-pos))
-         (inhibit-read-only t))
-    (erase-buffer)
-    (insert (propertize (buffer-name shell-buffer) 'face 'bold)
-            " — "
-            (propertize status 'face (agent-shell-swarm--status-face status))
-            "\n\n")
-    (insert (format "Agent:      %s\n"
-                    (or (map-nested-elt state '(:agent-config :mode-line-name)) "?"))
-            (format "Model:      %s\n" (or (agent-shell-get-model-name state) ""))
-            (format "Mode:       %s\n" (or (agent-shell-get-mode-name state) ""))
-            (format "Directory:  %s\n"
-                    (abbreviate-file-name
-                     (buffer-local-value 'default-directory shell-buffer)))
-            (format "Context:    %s\n" (agent-shell-swarm--context-percent state))
-            (format "Cost:       %s\n" (agent-shell-swarm--cost state)))
-    (when-let* ((pending (agent-shell-swarm--pending-permission shell-buffer))
-                (tool-call (cdr pending)))
-      (insert "\n"
-              (propertize "Pending permission" 'face 'error)
-              (substitute-command-keys
-               " (\\[agent-shell-swarm-detail-answer-permission] to answer):\n")
-              (agent-shell-swarm--format-tool-call tool-call) "\n")
-      (when-let* ((raw-input (map-elt tool-call :raw-input)))
-        (insert "  Input:\n")
-        (map-do (lambda (key value)
-                  (insert (format "    %s: %s\n" key
-                                  (truncate-string-to-width
-                                   (replace-regexp-in-string
-                                    "[\n\r\t]+" " " (format "%s" value))
-                                   120 nil nil "..."))))
-                raw-input))
-      (insert (format "  Options: %s\n"
-                      (mapconcat (lambda (action) (map-elt action :option))
-                                 (map-elt tool-call :permission-actions)
-                                 " · "))))
-    (let ((files (buffer-local-value 'agent-shell-swarm--changed-files
-                                     shell-buffer)))
-      (insert "\n"
-              (propertize (format "Changed files (%d):" (length files))
-                          'face 'bold)
-              "\n")
-      (if (null files)
-          (insert (propertize
-                   "  none recorded (tracked since the dashboard first opened)\n"
-                   'face 'shadow))
-        (dolist (path (reverse files))
-          (insert "  "
-                  (buttonize (agent-shell-swarm--display-path path shell-buffer)
-                             #'find-file path)
-                  "\n"))))
-    (when-let* ((tool-calls (map-elt state :tool-calls)))
-      (insert "\n" (propertize "Tool calls:" 'face 'bold) "\n")
-      (dolist (entry tool-calls)
-        (insert (agent-shell-swarm--format-tool-call (cdr entry)) "\n")))
-    (goto-char (point-min))
-    (forward-line (1- line))))
-
-(defun agent-shell-swarm--display-path (path shell-buffer)
-  "Return PATH relative to SHELL-BUFFER's directory when it lies inside it."
-  (let ((relative (file-relative-name
-                   path (buffer-local-value 'default-directory shell-buffer))))
-    (if (string-prefix-p ".." relative)
-        (abbreviate-file-name path)
-      relative)))
-
-(defun agent-shell-swarm-detail-refresh ()
-  "Re-render the detail view."
-  (interactive)
-  (unless (buffer-live-p agent-shell-swarm-detail--shell-buffer)
-    (user-error "Shell buffer no longer exists"))
-  (agent-shell-swarm-detail-render))
-
-(defun agent-shell-swarm-detail-answer-permission ()
-  "Answer the shell's pending permission request.
-Prompts for one of the options the agent offered (allow once,
-allow always, reject, ...) and sends the response."
-  (interactive)
-  (let ((shell-buffer agent-shell-swarm-detail--shell-buffer))
-    (unless (buffer-live-p shell-buffer)
-      (user-error "Shell buffer no longer exists"))
-    (let* ((pending (or (agent-shell-swarm--pending-permission shell-buffer)
-                        (user-error "No pending permission")))
-           (tool-call (cdr pending))
-           (actions (or (map-elt tool-call :permission-actions)
-                        (user-error "Permission request offers no options")))
-           (choice (completing-read
-                    (format "Respond to \"%s\": "
-                            (string-trim (or (map-elt tool-call :title) "")))
-                    (mapcar (lambda (action) (map-elt action :option)) actions)
-                    nil t))
-           (action (seq-find (lambda (action)
-                               (equal (map-elt action :option) choice))
-                             actions))
-           (state (buffer-local-value 'agent-shell--state shell-buffer)))
-      (agent-shell--send-permission-response
-       :client (map-elt state :client)
-       :request-id (map-elt tool-call :permission-request-id)
-       :option-id (map-elt action :option-id)
-       :state state
-       :tool-call-id (car pending))
-      (agent-shell-swarm-detail-render)
-      (message "Sent: %s" choice))))
-
-(defvar-keymap agent-shell-swarm-detail-mode-map
-  :doc "Keymap for `agent-shell-swarm-detail-mode'."
-  :parent special-mode-map
-  "a" #'agent-shell-swarm-detail-answer-permission
-  "g" #'agent-shell-swarm-detail-refresh)
-
-(define-derived-mode agent-shell-swarm-detail-mode special-mode "Agent-Swarm-Detail"
-  "Major mode showing details for one agent-shell instance.")
-
-(defun agent-shell-swarm-inspect ()
-  "Show details for the agent at point.
-Includes any pending permission request (answerable with
-\\<agent-shell-swarm-detail-mode-map>\\[agent-shell-swarm-detail-answer-permission]) and the tool calls of the current session."
-  (interactive)
-  (let ((shell-buffer (agent-shell-swarm--shell-buffer-at-point))
-        (detail (get-buffer-create agent-shell-swarm--detail-buffer-name)))
-    (with-current-buffer detail
-      (agent-shell-swarm-detail-mode)
-      (setq agent-shell-swarm-detail--shell-buffer shell-buffer)
-      (agent-shell-swarm-detail-render))
-    (pop-to-buffer detail)))
-
-(defun agent-shell-swarm--sync-detail ()
-  "Keep a live detail buffer in sync with dashboard refreshes."
-  (when-let* ((detail (get-buffer agent-shell-swarm--detail-buffer-name)))
-    (with-current-buffer detail
-      (when (buffer-live-p agent-shell-swarm-detail--shell-buffer)
-        (agent-shell-swarm-detail-render)))))
-
 ;;; Summary
-
-(defun agent-shell-swarm-fork ()
-  "Fork the agent at point: a new shell continuing the same conversation.
-Only available when the agent advertises session-fork support."
-  (interactive)
-  (let* ((shell-buffer (agent-shell-swarm--shell-buffer-at-point))
-         (state (buffer-local-value 'agent-shell--state shell-buffer))
-         (session-id (map-nested-elt state '(:session :id)))
-         (config (map-elt state :agent-config)))
-    (unless session-id
-      (user-error "%s has no active session to fork" (buffer-name shell-buffer)))
-    (unless (map-elt state :supports-session-fork)
-      (user-error "%s does not support session forking" (buffer-name shell-buffer)))
-    ;; Same arguments agent-shell's own fork command uses, but stay in
-    ;; the dashboard; the fork appears as a new row.
-    (let ((default-directory (buffer-local-value 'default-directory shell-buffer)))
-      (agent-shell--start :config config
-                          :session-strategy 'new
-                          :fork-session-id session-id
-                          :new-session t
-                          :no-focus t))
-    (revert-buffer)
-    (message "Forked %s" (buffer-name shell-buffer))))
 
 (defun agent-shell-swarm--summary ()
   "Return a one-line summary of the swarm for the mode line."
@@ -713,6 +169,8 @@ Only available when the agent advertises session-fork support."
 (defun agent-shell-swarm--update-mode-line ()
   "Refresh the swarm summary shown in the dashboard's mode line."
   (setq mode-line-process (list ": " (agent-shell-swarm--summary))))
+
+;;; Mode
 
 (defvar-keymap agent-shell-swarm-mode-map
   :doc "Keymap for `agent-shell-swarm-mode'."
