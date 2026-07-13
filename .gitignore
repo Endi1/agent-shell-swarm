@@ -1,0 +1,4 @@
+*.elc
+/.agent-shell/
+/.claude/
+/PLAN.md
