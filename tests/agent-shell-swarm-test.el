@@ -252,6 +252,82 @@ that hasn't finished initializing (its status reads as \"?\")."
       (should (equal started-dir "/tmp/chosen/"))
       (should (equal started '(((:buffer-name . "Fake")) t t))))))
 
+(ert-deftest agent-shell-swarm-test-new-worktree-agent ()
+  (let (git-calls started started-dir prompt-default)
+    (cl-letf (((symbol-function 'agent-shell-swarm--git-root)
+               (lambda (_) "/tmp/project"))
+              ((symbol-function 'read-directory-name)
+               (lambda (_prompt _directory &rest args)
+                 (setq prompt-default (nth 2 args))
+                 "/tmp/project-agent"))
+              ((symbol-function 'file-exists-p) (lambda (_) nil))
+              ((symbol-function 'agent-shell-select-config)
+               (lambda (&rest _) '((:buffer-name . "Fake"))))
+              ((symbol-function 'agent-shell-swarm--git)
+               (lambda (&rest args)
+                 (push args git-calls)
+                 (when (equal (last args 2)
+                              '("--get" "branch.main.remote"))
+                   "upstream")))
+              ((symbol-function 'agent-shell--start)
+               (cl-function
+                (lambda (&key config new-session &allow-other-keys)
+                  (setq started (list config new-session)
+                        started-dir default-directory)))))
+      (with-temp-buffer
+        (setq default-directory "/tmp/project/")
+        (agent-shell-swarm-new-worktree-agent)))
+    (should (equal prompt-default "project-worktree"))
+    (should (equal (nreverse git-calls)
+                   '(("-C" "/tmp/project" "config" "--get"
+                      "branch.main.remote")
+                     ("-C" "/tmp/project" "worktree" "add" "--detach"
+                      "/tmp/project-agent" "main")
+                     ("-C" "/tmp/project-agent" "pull" "--ff-only"
+                      "upstream" "main"))))
+    (should (equal started-dir "/tmp/project-agent/"))
+    (should (equal started '(((:buffer-name . "Fake")) t)))))
+
+(ert-deftest agent-shell-swarm-test-delete-worktree ()
+  (agent-shell-swarm-test--with-swarm
+    (agent-shell-swarm-test--make-shell "Worktree Agent" :dir "/tmp/worktree/")
+    (agent-shell-swarm)
+    (agent-shell-swarm-test--goto-row "Worktree Agent")
+    (let (git-calls)
+      (cl-letf (((symbol-function 'agent-shell-swarm--git-root)
+                 (lambda (_) "/tmp/worktree"))
+                ((symbol-function 'agent-shell-swarm--git)
+                 (lambda (&rest args)
+                   (push args git-calls)
+                   (cond
+                    ((equal (car (last args)) "--git-dir")
+                     "/tmp/project/.git/worktrees/worktree")
+                    ((equal (car (last args)) "--git-common-dir")
+                     "/tmp/project/.git"))))
+                ((symbol-function 'yes-or-no-p) (lambda (&rest _) t)))
+        (with-current-buffer agent-shell-swarm--buffer-name
+          (agent-shell-swarm-delete-worktree)))
+      (should-not (get-buffer "Worktree Agent"))
+      (should (equal (nreverse git-calls)
+                     '(("-C" "/tmp/worktree" "rev-parse" "--git-dir")
+                       ("-C" "/tmp/worktree" "rev-parse"
+                        "--git-common-dir")
+                       ("-C" "/tmp/worktree" "worktree" "remove"
+                        "--force" "/tmp/worktree")))))))
+
+(ert-deftest agent-shell-swarm-test-delete-primary-worktree-refused ()
+  (agent-shell-swarm-test--with-swarm
+    (agent-shell-swarm-test--make-shell "Primary Agent" :dir "/tmp/project/")
+    (agent-shell-swarm)
+    (agent-shell-swarm-test--goto-row "Primary Agent")
+    (cl-letf (((symbol-function 'agent-shell-swarm--git-root)
+               (lambda (_) "/tmp/project"))
+              ((symbol-function 'agent-shell-swarm--git)
+               (lambda (&rest _) "/tmp/project/.git")))
+      (with-current-buffer agent-shell-swarm--buffer-name
+        (should-error (agent-shell-swarm-delete-worktree) :type 'user-error)))
+    (should (get-buffer "Primary Agent"))))
+
 (ert-deftest agent-shell-swarm-test-next-blocked-cycles ()
   (agent-shell-swarm-test--with-swarm
     (dolist (name '("A" "B" "C" "D"))
@@ -580,6 +656,8 @@ that hasn't finished initializing (its status reads as \"?\")."
   (dolist (binding '(("n" . next-line)
                      ("p" . previous-line)
                      ("+" . agent-shell-swarm-new-agent)
+                     ("w" . agent-shell-swarm-new-worktree-agent)
+                     ("W" . agent-shell-swarm-delete-worktree)
                      ("m" . agent-shell-swarm-mark)
                      ("d" . agent-shell-swarm-mark)
                      ("u" . agent-shell-swarm-unmark)
@@ -605,6 +683,8 @@ that hasn't finished initializing (its status reads as \"?\")."
                          ("+" . agent-shell-swarm-new-agent)
                          ("s" . agent-shell-swarm-send-prompt)
                          ("i" . agent-shell-swarm-interrupt)
+                         ("w" . agent-shell-swarm-new-worktree-agent)
+                         ("W" . agent-shell-swarm-delete-worktree)
                          ("b" . agent-shell-swarm-next-blocked)
                          ("v" . agent-shell-swarm-inspect)
                          ("f" . agent-shell-swarm-fork)

@@ -1,7 +1,7 @@
 ;;; agent-shell-swarm.el --- Dashboard for agent-shell instances -*- lexical-binding: t; -*-
 
 ;; Author: Endi Sukaj
-;; Version: 0.2.0
+;; Version: 0.3.0
 ;; Package-Requires: ((emacs "29.1") (agent-shell "0.1"))
 ;; Keywords: convenience, tools
 ;; URL: https://github.com/Endi1/agent-shell-swarm
@@ -183,6 +183,8 @@ cells wide and knock every following column off by one."
   "+" #'agent-shell-swarm-new-agent
   "s" #'agent-shell-swarm-send-prompt
   "i" #'agent-shell-swarm-interrupt
+  "w" #'agent-shell-swarm-new-worktree-agent
+  "W" #'agent-shell-swarm-delete-worktree
   "b" #'agent-shell-swarm-next-blocked
   "v" #'agent-shell-swarm-inspect
   "f" #'agent-shell-swarm-fork
@@ -207,6 +209,8 @@ cells wide and knock every following column off by one."
     "+" #'agent-shell-swarm-new-agent
     "s" #'agent-shell-swarm-send-prompt
     "i" #'agent-shell-swarm-interrupt
+    "w" #'agent-shell-swarm-new-worktree-agent
+    "W" #'agent-shell-swarm-delete-worktree
     "b" #'agent-shell-swarm-next-blocked
     "v" #'agent-shell-swarm-inspect
     "f" #'agent-shell-swarm-fork
