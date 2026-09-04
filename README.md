@@ -30,7 +30,7 @@ The mode line sums up the swarm: `4 agents · 2 busy · 1 blocked · USD9.41`.
   with one confirmation. Marks survive refreshes.
 - **Triage** — jump straight to the next agent waiting on a permission.
 - **Worktree agents** — create an updated `main` worktree and start a new
-  agent in it with one command.
+  agent in it with one command, then remove the agent and worktree when done.
 - **evil-mode support** out of the box.
 
 ## Requirements
@@ -69,6 +69,7 @@ or with `use-package`:
 | `k`/`x` | kill the agent at point                                  |
 | `n`   | start a new agent (prompts for directory and agent)        |
 | `w`   | create an updated `main` worktree and start an agent there  |
+| `W`   | kill the agent and permanently delete its linked worktree  |
 | `f`   | fork the agent: new shell, same conversation               |
 | `b`   | jump to the next blocked agent                             |
 | `d`   | inspect: permission request, tool calls, changed files     |
@@ -96,6 +97,9 @@ differences: kill is only on `x` (`k` stays line-up) and refresh is on
 - Worktree agents use a detached checkout of `main` so the command also
   works when `main` is checked out in the original worktree. Create a
   branch in the new worktree before committing changes you want to keep.
+- Deleting a worktree (`W`) uses `git worktree remove --force`, discarding
+  all uncommitted and untracked files after confirmation. The primary
+  worktree cannot be deleted by this command.
 
 ## Development
 

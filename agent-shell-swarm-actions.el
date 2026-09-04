@@ -3,7 +3,8 @@
 ;;; Commentary:
 
 ;; Commands acting on the agent at point (visit, send, interrupt, kill,
-;; fork, new agent, worktree agent, next-blocked) and mark-based bulk operations.
+;; fork, new agent, worktree creation/removal, next-blocked) and mark-based
+;; bulk operations.
 ;; All run in the dashboard buffer.
 
 ;;; Code:
@@ -144,6 +145,37 @@ worktree's directory and agent config, add a detached worktree at
     (when (derived-mode-p 'agent-shell-swarm-mode)
       (revert-buffer))
     (message "Started agent in %s" (abbreviate-file-name worktree))))
+
+(defun agent-shell-swarm-delete-worktree ()
+  "Kill the agent at point and delete its linked Git worktree.
+
+Refuse to remove the repository's primary worktree.  After confirmation,
+Git removes the linked worktree with `--force', so uncommitted and
+untracked files in it are permanently discarded."
+  (interactive)
+  (let* ((shell-buffer (agent-shell-swarm--shell-buffer-at-point))
+         (directory (buffer-local-value 'default-directory shell-buffer))
+         (worktree (agent-shell-swarm--git-root directory))
+         (git-dir (expand-file-name
+                   (agent-shell-swarm--git
+                    "-C" worktree "rev-parse" "--git-dir")
+                   worktree))
+         (common-dir (expand-file-name
+                      (agent-shell-swarm--git
+                       "-C" worktree "rev-parse" "--git-common-dir")
+                      worktree)))
+    (when (equal (file-truename git-dir) (file-truename common-dir))
+      (user-error "Refusing to delete the repository's primary worktree"))
+    (when (yes-or-no-p
+           (format "Kill %s and delete worktree %s (discard all changes)? "
+                   (buffer-name shell-buffer)
+                   (abbreviate-file-name worktree)))
+      (unless (kill-buffer shell-buffer)
+        (user-error "Could not kill %s" (buffer-name shell-buffer)))
+      (agent-shell-swarm--git "-C" worktree "worktree" "remove" "--force"
+                              worktree)
+      (revert-buffer)
+      (message "Deleted worktree %s" (abbreviate-file-name worktree)))))
 
 (defun agent-shell-swarm-fork ()
   "Fork the agent at point: a new shell continuing the same conversation.
