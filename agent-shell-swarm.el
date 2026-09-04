@@ -18,25 +18,27 @@
 ;;   RET  visit the shell buffer at point
 ;;   s    send a prompt to the agent at point
 ;;   i    interrupt the agent at point
-;;   k    kill the agent at point (also on x)
-;;   n    start a new agent
+;;   n/p  move to the next/previous agent (as in Dired)
+;;   +    start a new agent
 ;;   b    jump to the next blocked agent
-;;   d    inspect the agent: pending permission, tool calls, changed files
+;;   v    inspect the agent: pending permission, tool calls, changed files
 ;;   f    fork the agent (new shell, same conversation)
 ;;   m/u  mark/unmark the agent at point (U unmarks all)
-;;   K    kill all marked agents
+;;   d    mark the agent for killing; x kills marked agents
+;;   D    kill the agent at point immediately
+;;   K    kill all marked agents (alias for x)
 ;;   I    interrupt all marked agents
 ;;   g    refresh the list
 ;;
-;; In the detail view (d): a answers a pending permission request,
+;; In the detail view (v): a answers a pending permission request,
 ;; g refreshes, q quits.
 ;;
 ;; The dashboard refreshes itself when shells emit events (turn
 ;; complete, permission requests, tool calls, ...), so it stays
 ;; current without polling.
 ;;
-;; With `evil-mode', the same keys work in normal/motion state, except
-;; kill is only on x (k stays line-up) and refresh is on gr.
+;; With `evil-mode', the same Dired-like keys work in normal/motion
+;; state and refresh is on gr.
 ;;
 ;; The mode line shows a swarm summary: agent count, busy/blocked
 ;; counts, and total cost.
@@ -176,39 +178,45 @@ cells wide and knock every following column off by one."
   :doc "Keymap for `agent-shell-swarm-mode'."
   :parent tabulated-list-mode-map
   "RET" #'agent-shell-swarm-visit
+  "n" #'next-line
+  "p" #'previous-line
+  "+" #'agent-shell-swarm-new-agent
   "s" #'agent-shell-swarm-send-prompt
   "i" #'agent-shell-swarm-interrupt
-  "k" #'agent-shell-swarm-kill
-  "x" #'agent-shell-swarm-kill
-  "n" #'agent-shell-swarm-new-agent
   "b" #'agent-shell-swarm-next-blocked
-  "d" #'agent-shell-swarm-inspect
+  "v" #'agent-shell-swarm-inspect
   "f" #'agent-shell-swarm-fork
   "m" #'agent-shell-swarm-mark
+  "d" #'agent-shell-swarm-mark
   "u" #'agent-shell-swarm-unmark
   "U" #'agent-shell-swarm-unmark-all
+  "x" #'agent-shell-swarm-kill-marked
   "K" #'agent-shell-swarm-kill-marked
+  "D" #'agent-shell-swarm-kill
   "I" #'agent-shell-swarm-interrupt-marked)
 
 (declare-function evil-define-key* "evil-core")
 
 (with-eval-after-load 'evil
   ;; Evil's normal/motion states shadow the mode map, so register the
-  ;; dashboard keys as auxiliary bindings for those states.  Kill stays
-  ;; off `k' here: that must remain line-up navigation under evil.
+  ;; dashboard's Dired-like keys as auxiliary bindings for those states.
   (evil-define-key* '(normal motion) agent-shell-swarm-mode-map
     (kbd "RET") #'agent-shell-swarm-visit
+    "n" #'next-line
+    "p" #'previous-line
+    "+" #'agent-shell-swarm-new-agent
     "s" #'agent-shell-swarm-send-prompt
     "i" #'agent-shell-swarm-interrupt
-    "x" #'agent-shell-swarm-kill
-    "n" #'agent-shell-swarm-new-agent
     "b" #'agent-shell-swarm-next-blocked
-    "d" #'agent-shell-swarm-inspect
+    "v" #'agent-shell-swarm-inspect
     "f" #'agent-shell-swarm-fork
     "m" #'agent-shell-swarm-mark
+    "d" #'agent-shell-swarm-mark
     "u" #'agent-shell-swarm-unmark
     "U" #'agent-shell-swarm-unmark-all
+    "x" #'agent-shell-swarm-kill-marked
     "K" #'agent-shell-swarm-kill-marked
+    "D" #'agent-shell-swarm-kill
     "I" #'agent-shell-swarm-interrupt-marked
     "gr" #'revert-buffer)
   (evil-define-key* '(normal motion) agent-shell-swarm-detail-mode-map
