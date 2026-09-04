@@ -650,6 +650,24 @@ that hasn't finished initializing (its status reads as \"?\")."
       (agent-shell-swarm-test--goto-row "No Fork")
       (should-error (agent-shell-swarm-fork) :type 'user-error))))
 
+;;; Dashboard key bindings
+
+(ert-deftest agent-shell-swarm-test-dired-like-bindings ()
+  (dolist (binding '(("n" . next-line)
+                     ("p" . previous-line)
+                     ("+" . agent-shell-swarm-new-agent)
+                     ("w" . agent-shell-swarm-new-worktree-agent)
+                     ("W" . agent-shell-swarm-delete-worktree)
+                     ("m" . agent-shell-swarm-mark)
+                     ("d" . agent-shell-swarm-mark)
+                     ("u" . agent-shell-swarm-unmark)
+                     ("U" . agent-shell-swarm-unmark-all)
+                     ("x" . agent-shell-swarm-kill-marked)
+                     ("D" . agent-shell-swarm-kill)
+                     ("v" . agent-shell-swarm-inspect)))
+    (should (eq (lookup-key agent-shell-swarm-mode-map (kbd (car binding)))
+                (cdr binding)))))
+
 ;;; Evil integration
 
 (ert-deftest agent-shell-swarm-test-evil-bindings ()
@@ -660,23 +678,27 @@ that hasn't finished initializing (its status reads as \"?\")."
     (with-current-buffer agent-shell-swarm--buffer-name
       (evil-local-mode 1)
       (evil-normal-state)
-      (dolist (binding '(("s" . agent-shell-swarm-send-prompt)
+      (dolist (binding '(("n" . next-line)
+                         ("p" . previous-line)
+                         ("+" . agent-shell-swarm-new-agent)
+                         ("s" . agent-shell-swarm-send-prompt)
                          ("i" . agent-shell-swarm-interrupt)
-                         ("x" . agent-shell-swarm-kill)
-                         ("n" . agent-shell-swarm-new-agent)
                          ("w" . agent-shell-swarm-new-worktree-agent)
                          ("W" . agent-shell-swarm-delete-worktree)
                          ("b" . agent-shell-swarm-next-blocked)
-                         ("d" . agent-shell-swarm-inspect)
+                         ("v" . agent-shell-swarm-inspect)
                          ("f" . agent-shell-swarm-fork)
                          ("m" . agent-shell-swarm-mark)
+                         ("d" . agent-shell-swarm-mark)
                          ("u" . agent-shell-swarm-unmark)
                          ("U" . agent-shell-swarm-unmark-all)
+                         ("x" . agent-shell-swarm-kill-marked)
                          ("K" . agent-shell-swarm-kill-marked)
+                         ("D" . agent-shell-swarm-kill)
                          ("I" . agent-shell-swarm-interrupt-marked)
                          ("gr" . revert-buffer)))
         (should (eq (key-binding (kbd (car binding))) (cdr binding))))
-      ;; k must remain evil navigation, not kill.
+      ;; k remains Evil navigation rather than killing an agent.
       (should-not (eq (key-binding "k") 'agent-shell-swarm-kill)))))
 
 (provide 'agent-shell-swarm-test)

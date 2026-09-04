@@ -64,27 +64,28 @@ or with `use-package`:
 | Key   | Action                                                     |
 |-------|------------------------------------------------------------|
 | `RET` | visit the agent's shell buffer                             |
+| `n`/`p` | move to the next / previous agent (Dired-style)          |
+| `+`   | start a new agent (prompts for directory and agent)        |
 | `s`   | send a prompt to the agent at point (stays in dashboard)   |
 | `i`   | interrupt the agent at point                               |
-| `k`/`x` | kill the agent at point                                  |
-| `n`   | start a new agent (prompts for directory and agent)        |
 | `w`   | create an updated `main` worktree and start an agent there  |
 | `W`   | kill the agent and permanently delete its linked worktree  |
 | `f`   | fork the agent: new shell, same conversation               |
 | `b`   | jump to the next blocked agent                             |
-| `d`   | inspect: permission request, tool calls, changed files     |
+| `v`   | inspect: permission request, tool calls, changed files     |
 | `m`/`u`/`U` | mark / unmark / unmark all                           |
-| `K`   | kill all marked agents                                     |
+| `d`   | mark the agent for killing (like Dired)                    |
+| `x`/`K` | kill all marked agents                                  |
+| `D`   | kill the agent at point immediately                        |
 | `I`   | interrupt all marked agents                                |
 | `g`   | refresh manually                                           |
 
-In the detail view (`d`): `a` answers the pending permission request
+In the detail view (`v`): `a` answers the pending permission request
 (choosing among the options the agent offered), `g` refreshes, `q`
 quits. Changed-file entries are buttons that open the file.
 
-With evil-mode, the same keys work in normal/motion state, with two
-differences: kill is only on `x` (`k` stays line-up) and refresh is on
-`gr`.
+With evil-mode, the same Dired-like keys work in normal/motion state;
+refresh is on `gr`.
 
 ### Notes
 
