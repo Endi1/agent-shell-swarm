@@ -181,6 +181,7 @@ cells wide and knock every following column off by one."
   "k" #'agent-shell-swarm-kill
   "x" #'agent-shell-swarm-kill
   "n" #'agent-shell-swarm-new-agent
+  "w" #'agent-shell-swarm-new-worktree-agent
   "b" #'agent-shell-swarm-next-blocked
   "d" #'agent-shell-swarm-inspect
   "f" #'agent-shell-swarm-fork
@@ -202,6 +203,7 @@ cells wide and knock every following column off by one."
     "i" #'agent-shell-swarm-interrupt
     "x" #'agent-shell-swarm-kill
     "n" #'agent-shell-swarm-new-agent
+    "w" #'agent-shell-swarm-new-worktree-agent
     "b" #'agent-shell-swarm-next-blocked
     "d" #'agent-shell-swarm-inspect
     "f" #'agent-shell-swarm-fork

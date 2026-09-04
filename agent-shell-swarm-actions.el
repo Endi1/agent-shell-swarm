@@ -3,7 +3,7 @@
 ;;; Commentary:
 
 ;; Commands acting on the agent at point (visit, send, interrupt, kill,
-;; fork, new agent, next-blocked) and mark-based bulk operations.
+;; fork, new agent, worktree agent, next-blocked) and mark-based bulk operations.
 ;; All run in the dashboard buffer.
 
 ;;; Code:
@@ -13,6 +13,26 @@
 (require 'tabulated-list)
 (require 'agent-shell)
 (require 'agent-shell-swarm-shell)
+
+(defun agent-shell-swarm--git (&rest arguments)
+  "Run Git with ARGUMENTS and return its trimmed output.
+Signal a `user-error' containing Git's output when the command fails."
+  (unless (executable-find "git")
+    (user-error "Git executable not found"))
+  (with-temp-buffer
+    (let ((status (apply #'process-file "git" nil t nil arguments)))
+      (if (zerop status)
+          (string-trim (buffer-string))
+        (user-error "Git failed: %s"
+                    (string-trim (buffer-string)))))))
+
+(defun agent-shell-swarm--git-root (directory)
+  "Return the Git worktree root containing DIRECTORY."
+  (condition-case nil
+      (agent-shell-swarm--git "-C" directory "rev-parse" "--show-toplevel")
+    (user-error
+     (user-error "%s is not inside a Git repository"
+                 (abbreviate-file-name directory)))))
 
 ;;; Row commands
 
@@ -81,6 +101,49 @@ project root containing the chosen directory)."
          (default-directory directory))
     (agent-shell--start :config config :no-focus t :new-session t)
     (revert-buffer)))
+
+(defun agent-shell-swarm-new-worktree-agent ()
+  "Create a fresh worktree from main and start an agent-shell in it.
+
+The repository is found from `default-directory'.  Prompt for the new
+worktree's directory and agent config, add a detached worktree at
+`main', then fast-forward it from main's configured remote (or
+`origin').  A detached checkout is used because Git does not permit
+`main' to be checked out in multiple worktrees at once."
+  (interactive)
+  (let* ((root (agent-shell-swarm--git-root default-directory))
+         (name (file-name-nondirectory (directory-file-name root)))
+         (parent (file-name-directory (directory-file-name root)))
+         (worktree (directory-file-name
+                    (expand-file-name
+                     (read-directory-name
+                      "New worktree directory: " parent nil nil
+                      (concat name "-worktree")))))
+         (config (or (agent-shell-select-config
+                      :prompt "Start agent in new worktree: ")
+                     (user-error "No agent selected")))
+         (remote (condition-case nil
+                     (agent-shell-swarm--git
+                      "-C" root "config" "--get" "branch.main.remote")
+                   (user-error "origin"))))
+    (when (file-exists-p worktree)
+      (user-error "%s already exists" (abbreviate-file-name worktree)))
+    (agent-shell-swarm--git "-C" root "worktree" "add" "--detach"
+                            worktree "main")
+    (condition-case error-data
+        (agent-shell-swarm--git "-C" worktree "pull" "--ff-only"
+                                remote "main")
+      (user-error
+       ;; Do not leave an unusable worktree behind if updating it failed.
+       (ignore-errors
+         (agent-shell-swarm--git "-C" root "worktree" "remove" "--force"
+                                 worktree))
+       (signal (car error-data) (cdr error-data))))
+    (let ((default-directory (file-name-as-directory worktree)))
+      (agent-shell--start :config config :new-session t))
+    (when (derived-mode-p 'agent-shell-swarm-mode)
+      (revert-buffer))
+    (message "Started agent in %s" (abbreviate-file-name worktree))))
 
 (defun agent-shell-swarm-fork ()
   "Fork the agent at point: a new shell continuing the same conversation.
