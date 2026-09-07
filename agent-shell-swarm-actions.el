@@ -15,6 +15,8 @@
 (require 'agent-shell)
 (require 'agent-shell-swarm-shell)
 
+(declare-function projectile-known-projects "projectile" ())
+
 (defun agent-shell-swarm--git (&rest arguments)
   "Run Git with ARGUMENTS and return its trimmed output.
 Signal a `user-error' containing Git's output when the command fails."
@@ -106,13 +108,22 @@ project root containing the chosen directory)."
 (defun agent-shell-swarm-new-worktree-agent ()
   "Create a fresh worktree from main and start an agent-shell in it.
 
-The repository is found from `default-directory'.  Prompt for the new
-worktree's directory and agent config, add a detached worktree at
-`main', then fast-forward it from main's configured remote (or
-`origin').  A detached checkout is used because Git does not permit
-`main' to be checked out in multiple worktrees at once."
+Prompt for a known Projectile project, then for the new worktree's
+directory and agent config.  Add a detached worktree at `main', then
+fast-forward it from main's configured remote (or `origin').  A
+detached checkout is used because Git does not permit `main' to be
+checked out in multiple worktrees at once.
+Requires Projectile to be installed."
   (interactive)
-  (let* ((root (agent-shell-swarm--git-root default-directory))
+  (unless (require 'projectile nil t)
+    (user-error "Projectile is required to select a project"))
+  (let* ((projects (or (projectile-known-projects)
+                       (user-error "No known Projectile projects")))
+         (project (completing-read "Project for new worktree agent: "
+                                   projects nil t))
+         (root (if (member project projects)
+                   (agent-shell-swarm--git-root (expand-file-name project))
+                 (user-error "No Projectile project selected")))
          (name (file-name-nondirectory (directory-file-name root)))
          (parent (file-name-directory (directory-file-name root)))
          (worktree (directory-file-name
