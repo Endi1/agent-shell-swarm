@@ -10,7 +10,6 @@ fork, and kill agents — without visiting their buffers.
 ```
  Claude Agent @ backend        busy     Claude     Fable 5          Accept Edits   75%  USD1.42  35s ~/code/backend/    Fix the flaky test
  Claude Agent @ frontend       blocked  Claude     Fable 5          Plan            2%  USD0.30   2m ~/code/frontend/   Add login form validation
- Pi Agent @ tether             ready    Pi         GPT-5.6 Sol      Thinking: med…       USD0.85   1h ~/vetted/tether/   Implement the MVP
 ```
 
 The mode line sums up the swarm: `4 agents · 2 busy · 1 blocked · USD9.41`.
