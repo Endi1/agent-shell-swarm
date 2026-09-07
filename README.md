@@ -10,7 +10,6 @@ fork, and kill agents — without visiting their buffers.
 ```
  Claude Agent @ backend        busy     Claude     Fable 5          Accept Edits   75%  USD1.42  35s ~/code/backend/    Fix the flaky test
  Claude Agent @ frontend       blocked  Claude     Fable 5          Plan            2%  USD0.30   2m ~/code/frontend/   Add login form validation
- Pi Agent @ tether             ready    Pi         GPT-5.6 Sol      Thinking: med…       USD0.85   1h ~/vetted/tether/   Implement the MVP
 ```
 
 The mode line sums up the swarm: `4 agents · 2 busy · 1 blocked · USD9.41`.
@@ -38,6 +37,8 @@ The mode line sums up the swarm: `4 agents · 2 busy · 1 blocked · USD9.41`.
 - Emacs 29.1+
 - [agent-shell](https://github.com/xenodium/agent-shell) (and its
   dependencies: shell-maker, acp)
+- [Projectile](https://github.com/bbatsov/projectile) is required only for
+  creating worktree agents (to select from its known projects)
 - [evil](https://github.com/emacs-evil/evil) is optional; bindings are
   added when it's loaded
 
@@ -95,6 +96,9 @@ refresh is on `gr`.
   been open; files created as side effects of shell commands the agent
   runs are not seen.
 - Fork requires the agent to advertise session-fork support.
+- Creating a worktree agent (`w`) first prompts for a known Projectile
+  project, then the new worktree directory and agent configuration. The
+  selected project is used regardless of the dashboard's current directory.
 - Worktree agents use a detached checkout of `main` so the command also
   works when `main` is checked out in the original worktree. Create a
   branch in the new worktree before committing changes you want to keep.

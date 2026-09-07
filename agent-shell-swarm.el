@@ -1,7 +1,7 @@
 ;;; agent-shell-swarm.el --- Dashboard for agent-shell instances -*- lexical-binding: t; -*-
 
 ;; Author: Endi Sukaj
-;; Version: 0.3.0
+;; Version: 0.4.0
 ;; Package-Requires: ((emacs "29.1") (agent-shell "0.1"))
 ;; Keywords: convenience, tools
 ;; URL: https://github.com/Endi1/agent-shell-swarm
